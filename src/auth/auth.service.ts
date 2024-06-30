@@ -1,8 +1,13 @@
 import { faker } from '@faker-js/faker'
-import { BadRequestException, Injectable } from '@nestjs/common'
+import {
+	BadRequestException,
+	Injectable,
+	NotFoundException,
+	UnauthorizedException
+} from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import { User } from '@prisma/client'
-import { hash } from 'argon2'
+import { hash, verify } from 'argon2'
 import { PrismaService } from 'src/prisma.service'
 import { AuthDto } from './dto/auth.dto'
 
@@ -12,12 +17,34 @@ export class AuthService {
 		private prisma: PrismaService,
 		private jwt: JwtService
 	) {}
-	async register(dto: AuthDto) {
-		const oldUser = await this.prisma.user.findUnique({
+
+	async login(dto: AuthDto) {
+		const user = await this.validateUser(dto)
+		const tokens = await this.issueTokens(user.id)
+		return {
+			user: this.returnUserFields(user),
+			...tokens
+		}
+	}
+
+	async getNewTokens(refreshToken: string) {
+		const result = await this.jwt.verifyAsync(refreshToken)
+		if (!result) throw new UnauthorizedException('Неправильный refresh token.')
+		const user = await this.prisma.user.findUnique({
 			where: {
-				email: dto.email
+				id: result.id
 			}
 		})
+		const tokens = await this.issueTokens(user.id)
+
+		return {
+			user: this.returnUserFields(user),
+			...tokens
+		}
+	}
+
+	async register(dto: AuthDto) {
+		const oldUser = await this.findUser(dto.email)
 
 		if (oldUser) throw new BadRequestException('Пользователь уже существует')
 
@@ -54,5 +81,22 @@ export class AuthService {
 			id: user.id,
 			email: user.email
 		}
+	}
+	private async findUser(email: string) {
+		const user = await this.prisma.user.findUnique({
+			where: {
+				email: email
+			}
+		})
+		return user
+	}
+	private async validateUser(dto: AuthDto) {
+		const user = await this.findUser(dto.email)
+
+		if (!user) throw new NotFoundException('Пользователь не найден')
+
+		const isValid = await verify(user.password, dto.password)
+		if (!isValid) throw new UnauthorizedException('Неправильный пароль.')
+		return user
 	}
 }
